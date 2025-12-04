@@ -1,34 +1,42 @@
 "use client";
 
 import { useEffect } from "react";
+import { db } from "../lib/firebase";
+import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 
 export function useAnalytics(variantId?: string) {
   useEffect(() => {
+    // Session ID (unique w.r.t user)
     const sessionId =
       crypto.randomUUID?.() ?? `sess_${Date.now()}_${Math.random()}`;
 
-    function send(eventType: string, payload: Record<string, unknown> = {}) {
-      fetch("/api/analytics", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+    // Helper function to send events
+    async function send(
+      eventType: string,
+      payload: Record<string, unknown> = {}
+    ) {
+      try {
+        await addDoc(collection(db, "events"), {
           sessionId,
           eventType,
           payload,
-          ts: new Date().toISOString(),
+          ts: new Date().toISOString(), // readable timestamp
+          createdAt: serverTimestamp(), // firestore timestamp
           variantId
-        })
-      }).catch(() => {
-        // ignore errors on client
-      });
+        });
+      } catch (e) {
+        console.error("Error writing analytics event:", e);
+      }
     }
 
-    // log pageview once
+    // Log FIRST event → pageview
     send("pageview", { path: window.location.pathname });
 
+    // CLICK Tracking
     function handleClick(e: MouseEvent) {
       const target = e.target as HTMLElement;
-      const text = target.innerText?.slice(0, 80);
+
+      const text = target.innerText?.slice(0, 80) ?? "";
       send("click", {
         x: e.clientX,
         y: e.clientY,
@@ -37,21 +45,26 @@ export function useAnalytics(variantId?: string) {
       });
     }
 
+    // SCROLL Tracking
     function handleScroll() {
       const scrollTop =
         window.pageYOffset || document.documentElement.scrollTop;
+
       const docHeight =
         document.documentElement.scrollHeight -
         document.documentElement.clientHeight;
+
       const scrollPercent =
         docHeight > 0 ? Math.round((scrollTop / docHeight) * 100) : 0;
 
       send("scroll", { scrollPercent });
     }
 
+    // Attach event listeners
     window.addEventListener("click", handleClick);
     window.addEventListener("scroll", handleScroll);
 
+    // Remove listeners on unmount
     return () => {
       window.removeEventListener("click", handleClick);
       window.removeEventListener("scroll", handleScroll);

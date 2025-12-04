@@ -1,6 +1,14 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { db } from "../../lib/firebase";
+import {
+  collection,
+  getDocs,
+  query,
+  orderBy,
+  limit
+} from "firebase/firestore";
 
 type AnalyticsEvent = {
   sessionId: string;
@@ -8,11 +16,6 @@ type AnalyticsEvent = {
   payload: Record<string, unknown>;
   ts: string;
   variantId?: string;
-};
-
-type ApiResponse = {
-  count: number;
-  events: AnalyticsEvent[];
 };
 
 type VariantId = "A" | "B";
@@ -83,16 +86,30 @@ function computeVariantStats(events: AnalyticsEvent[]): VariantStats[] {
 }
 
 export default function DashboardPage() {
-  const [data, setData] = useState<ApiResponse | null>(null);
+  const [events, setEvents] = useState<AnalyticsEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     try {
-      const res = await fetch("/api/analytics");
-      const json: ApiResponse = await res.json();
-      setData(json);
+      const q = query(
+        collection(db, "events"),
+        orderBy("ts", "desc"),
+        limit(200)
+      );
+      const snap = await getDocs(q);
+      const loaded: AnalyticsEvent[] = snap.docs.map((doc) => {
+        const data = doc.data() as any;
+        return {
+          sessionId: data.sessionId ?? "unknown",
+          eventType: data.eventType ?? "unknown",
+          payload: (data.payload ?? {}) as Record<string, unknown>,
+          ts: data.ts ?? new Date().toISOString(),
+          variantId: data.variantId
+        };
+      });
+      setEvents(loaded);
     } catch (e) {
-      console.error("Failed to load analytics", e);
+      console.error("Failed to load events from Firestore", e);
     } finally {
       setLoading(false);
     }
@@ -100,11 +117,11 @@ export default function DashboardPage() {
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 5000); // refresh every 5s
+    const id = setInterval(load, 5000);
     return () => clearInterval(id);
   }, []);
 
-  const events = data?.events ?? [];
+  const totalEvents = events.length;
   const uniqueSessions = new Set(events.map((e) => e.sessionId)).size;
   const variantStats = computeVariantStats(events);
 
@@ -133,7 +150,7 @@ export default function DashboardPage() {
               <div className="flex gap-2 text-[9px] text-slate-400">
                 <span>MODE: LIVE TELEMETRY</span>
                 <span className="text-lime-300">
-                  EVENTS: {data?.count ?? 0}
+                  EVENTS: {totalEvents}
                 </span>
               </div>
             </div>
@@ -166,7 +183,7 @@ export default function DashboardPage() {
                   TOTAL EVENTS
                 </p>
                 <p className="mt-2 text-2xl font-semibold text-amber-300">
-                  {data?.count ?? 0}
+                  {totalEvents}
                 </p>
                 <p className="mt-1 text-[9px] text-slate-500">
                   Pageviews, clicks and scrolls captured for this build.
@@ -181,7 +198,7 @@ export default function DashboardPage() {
                   {uniqueSessions}
                 </p>
                 <p className="mt-1 text-[9px] text-slate-500">
-                  Distinct visitors currently represented in the event log.
+                  Distinct visitors represented in the event log.
                 </p>
               </div>
 
@@ -270,7 +287,7 @@ export default function DashboardPage() {
               </h2>
               <div className="retro-panel scanline-overlay border border-slate-700/80 p-3">
                 <div className="mb-2 flex items-center justify-between text-[9px] text-slate-400">
-                  <span>/var/log/cmindx-events.log</span>
+                  <span>/firestore/events</span>
                   <span className="hud-scan text-lime-300">
                     STREAM • REFRESHING EVERY 5s
                   </span>
@@ -287,50 +304,46 @@ export default function DashboardPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {events
-                        .slice()
-                        .reverse()
-                        .slice(0, 80)
-                        .map((e, idx) => (
-                          <tr
-                            key={`${e.ts}-${idx}`}
-                            className="border-t border-slate-800/80"
-                          >
-                            <td className="px-3 py-2 text-slate-300">
-                              {new Date(e.ts).toLocaleTimeString()}
-                            </td>
-                            <td className="px-3 py-2 text-slate-400">
-                              {e.sessionId.slice(0, 8)}…
-                            </td>
-                            <td className="px-3 py-2 text-slate-300">
-                              {e.variantId ?? "—"}
-                            </td>
-                            <td className="px-3 py-2">
-                              <span
-                                className={[
-                                  "rounded-full px-2 py-0.5 text-[9px] uppercase tracking-wide",
-                                  e.eventType === "click"
-                                    ? "bg-rose-500/20 text-rose-200"
-                                    : e.eventType === "scroll"
-                                    ? "bg-amber-500/20 text-amber-200"
-                                    : "bg-slate-700/50 text-slate-100"
-                                ].join(" ")}
-                              >
-                                {e.eventType}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2 text-slate-300">
-                              {e.eventType === "scroll" &&
-                                `Scroll: ${e.payload.scrollPercent}%`}
-                              {e.eventType === "click" &&
-                                `Click on ${e.payload.tag} "${
-                                  (e.payload.text as string) || ""
-                                }"`}
-                              {e.eventType === "pageview" &&
-                                `Path: ${e.payload.path}`}
-                            </td>
-                          </tr>
-                        ))}
+                      {events.slice(0, 80).map((e, idx) => (
+                        <tr
+                          key={`${e.ts}-${idx}`}
+                          className="border-t border-slate-800/80"
+                        >
+                          <td className="px-3 py-2 text-slate-300">
+                            {new Date(e.ts).toLocaleTimeString()}
+                          </td>
+                          <td className="px-3 py-2 text-slate-400">
+                            {e.sessionId.slice(0, 8)}…
+                          </td>
+                          <td className="px-3 py-2 text-slate-300">
+                            {e.variantId ?? "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={[
+                                "rounded-full px-2 py-0.5 text-[9px] uppercase tracking-wide",
+                                e.eventType === "click"
+                                  ? "bg-rose-500/20 text-rose-200"
+                                  : e.eventType === "scroll"
+                                  ? "bg-amber-500/20 text-amber-200"
+                                  : "bg-slate-700/50 text-slate-100"
+                              ].join(" ")}
+                            >
+                              {e.eventType}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-slate-300">
+                            {e.eventType === "scroll" &&
+                              `Scroll: ${e.payload.scrollPercent}%`}
+                            {e.eventType === "click" &&
+                              `Click on ${e.payload.tag} "${
+                                (e.payload.text as string) || ""
+                              }"`}
+                            {e.eventType === "pageview" &&
+                              `Path: ${e.payload.path}`}
+                          </td>
+                        </tr>
+                      ))}
                       {events.length === 0 && (
                         <tr>
                           <td
